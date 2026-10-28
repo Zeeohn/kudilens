@@ -1,0 +1,10 @@
+# secrets and local data never leave this machine
+.env
+.env.*
+!.env.example
+data/
+*.sqlite
+*.sqlite-*
+eval/private/
+node_modules/
+.DS_Store

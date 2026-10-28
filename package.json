@@ -1,0 +1,13 @@
+{
+  "name": "kudilens",
+  "version": "0.1.0",
+  "description": "An AI bookkeeper for market traders: photos of handwritten sales books and voice notes in their own language become a verified ledger.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.ts\"",
+    "start": "node --disable-warning=ExperimentalWarning src/main.ts",
+    "eval": "node eval/run.ts"
+  }
+}
