@@ -1,0 +1,6 @@
+{ "image": "page-debts.jpg", "total": null, "lines": [
+  { "kind": "sale", "amount": 9000, "paid": "partial", "customer": "Bisi" },
+  { "kind": "stock_in", "amount": 25000, "paid": "owed", "customer": "Alhaji Musa" },
+  { "kind": "payment", "amount": 3000, "paid": "paid", "customer": "Chinedu" },
+  { "kind": "expense", "amount": 1500, "paid": "paid", "customer": null },
+  { "kind": "expense", "amount": 2000, "paid": "paid", "customer": null } ] }

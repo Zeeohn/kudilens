@@ -78,3 +78,11 @@ test('duplicates and customer names', () => {
   assert.equal(matchCustomer('Mama Tundee', ['Mama Tunde', 'Baba Tunde'])?.name, 'Mama Tunde');
   assert.equal(matchCustomer('Chinedu', ['Mama Tunde']), null);
 });
+
+test('quantity × price breaks a tie between two possible repairs', () => {
+  // 5,000 (2 × 2,500) was read as 6,000; 6,500 → 5,500 would also fix the total.
+  const page = [entry({ amount: 600000, quantity: 2, unitPrice: 250000 }), entry({ amount: 650000 }), entry({ amount: 120000 })];
+  const r = reconcileTotal(page, 1270000);
+  assert.equal(r.status, 'repaired');
+  assert.deepEqual([r.repairs[0].target, r.repairs[0].to], [0, 500000]);
+});

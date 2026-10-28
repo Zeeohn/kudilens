@@ -1,0 +1,40 @@
+{
+ "image": "page-sales.jpg",
+ "total": 21300,
+ "lines": [
+  {
+   "kind": "sale",
+   "amount": 5000,
+   "paid": "paid",
+   "customer": null,
+   "quantity": 2,
+   "unitPrice": 2500
+  },
+  {
+   "kind": "sale",
+   "amount": 7000,
+   "paid": "paid",
+   "customer": null
+  },
+  {
+   "kind": "sale",
+   "amount": 6500,
+   "paid": "owed",
+   "customer": "Mama Tunde"
+  },
+  {
+   "kind": "sale",
+   "amount": 1200,
+   "paid": "paid",
+   "customer": null
+  },
+  {
+   "kind": "sale",
+   "amount": 1600,
+   "paid": "paid",
+   "customer": null,
+   "quantity": 2,
+   "unitPrice": 800
+  }
+ ]
+}

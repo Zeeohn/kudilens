@@ -191,7 +191,7 @@ export class App {
       case 'lang': {
         if (!(a in LANG_NAMES)) return;
         this.o.ledger.updateTrader(trader.id, { language: a });
-        return send({ text: t(a, 'langSet') === t('en', 'langSet') && a !== 'en' ? `✅ ${LANG_NAMES[a as Lang]}` : t(a, 'langSet') });
+        return send({ text: t(a, 'langSet') });
       }
       case 'ok':
         return this.confirmBatch(trader, st, a, send);
@@ -427,7 +427,11 @@ export class App {
       const vars = { total: formatNaira(total.written ?? 0), written: formatNaira(total.written ?? 0), computed: formatNaira(total.computed) };
       if (total.status === 'match') out.push('', t(lang, total.basis === 'cash_received' ? 'totalCashMatches' : 'totalMatches', vars));
       else if (total.status === 'mismatch') out.push('', t(lang, 'totalMismatch', vars));
-      else if (total.status === 'ambiguous') out.push('', t(lang, 'totalAmbiguous', vars));
+      else if (total.status === 'ambiguous') {
+        const hints = total.repairs.filter((r) => typeof r.target === 'number').slice(0, 4)
+          .map((r) => `${t(lang, 'line')} ${(r.target as number) + 1}: ${formatNaira(r.from)} → ${formatNaira(r.to)}?`);
+        out.push('', t(lang, 'totalAmbiguous', vars), ...hints.map((h) => `   • ${h}`));
+      }
       else if (total.status === 'repaired' && total.repairs[0].target === 'total') out.push('', t(lang, 'repairTotal', { from: formatNaira(total.repairs[0].from), to: formatNaira(total.repairs[0].to) }));
     }
     if (st.repair) {

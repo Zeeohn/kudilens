@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 // Fixed interface text. English and Pidgin are written by hand; Yoruba, Hausa and Igbo
 // were drafted with Muse Spark and must be checked by a native speaker before launch.
 // Anything the models write (summaries, answers, reminders) is in the trader's language too.
@@ -26,10 +29,11 @@ const en = {
   totalMatches: '✅ Your written total {total} matches.',
   totalCashMatches: '✅ Your written total {total} matches the cash you received.',
   totalMismatch: "⚠️ Your written total is {written}, but the lines add up to {computed}. Please check the lines.",
-  totalAmbiguous: "⚠️ Your written total is {written}, but the lines add up to {computed}. More than one line could be wrong; please check.",
+  totalAmbiguous: "⚠️ Your written total is {written}, but the lines add up to {computed}. One of these is probably misread; tap ✏️ to fix it:",
   repairLine: '🔧 Line {n}: I read {from}, but your total says {total}. Was it **{to}**?',
   repairTotal: '🔧 Your total reads {from}, but the lines add up to {to}. I think the total is **{to}**.',
   needsCheck: 'Lines marked ⚠️ need your eye.',
+  line: 'Line',
   confirmAll: '✅ Save',
   fix: '✏️ Fix',
   discard: '🗑️ Discard',
@@ -92,7 +96,7 @@ const pcm: Partial<Record<Key, string>> = {
   totalMatches: '✅ The total wey you write, {total}, correct.',
   totalCashMatches: '✅ The total wey you write, {total}, match the cash wey you collect.',
   totalMismatch: '⚠️ You write total {written}, but the lines add reach {computed}. Abeg check the lines.',
-  totalAmbiguous: '⚠️ You write total {written}, but the lines add reach {computed}. More than one line fit be wrong; abeg check.',
+  totalAmbiguous: '⚠️ You write total {written}, but the lines add reach {computed}. One of these ones fit be wrong; tap ✏️ to change am:',
   repairLine: '🔧 Line {n}: I read am as {from}, but your total talk {total}. Na **{to}**?',
   repairTotal: '🔧 Your total read {from}, but the lines add reach {to}. I think say the total na **{to}**.',
   needsCheck: 'Lines wey get ⚠️ need make you look am.',
@@ -135,6 +139,17 @@ const pcm: Partial<Record<Key, string>> = {
 };
 
 const TABLES: Record<Lang, Partial<Record<Key, string>>> = { en, pcm, yo: {}, ha: {}, ig: {} };
+
+// Yoruba, Hausa and Igbo drafts (scripts/translate-ui.ts). Only keys that keep every placeholder are used.
+try {
+  const drafts = JSON.parse(readFileSync(join(import.meta.dirname, 'i18n-drafts.json'), 'utf8')) as Record<string, Record<string, string>>;
+  for (const lang of ['yo', 'ha', 'ig'] as const) {
+    for (const [k, v] of Object.entries(drafts[lang] ?? {})) {
+      const placeholders = (en[k as Key] ?? '').match(/\{\w+\}/g) ?? [];
+      if (k in en && placeholders.every((ph) => v.includes(ph))) TABLES[lang][k as Key] = v;
+    }
+  }
+} catch { /* drafts are optional */ }
 
 /** Load machine-drafted tables for yo/ha/ig if present (see scripts/translate-ui.ts). */
 export function registerTable(lang: Lang, table: Partial<Record<Key, string>>): void {

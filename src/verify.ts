@@ -156,8 +156,19 @@ export function reconcileTotal(entries: ProposedEntry[], written: Kobo | null): 
     if (m.value === salesSum) candidates.push({ target: 'total', from: written, to: m.value, reason: m.reason });
   }
 
-  const status = candidates.length === 1 ? 'repaired' : candidates.length > 1 ? 'ambiguous' : 'mismatch';
-  return { status, basis: 'sales', written, computed: salesSum, repairs: candidates };
+  // Several readings fit the total: prefer the one that also agrees with the line's own
+  // quantity × unit price, since that is a second, independent witness.
+  let chosen = candidates;
+  if (candidates.length > 1) {
+    const agree = candidates.filter((c) => {
+      if (c.target === 'total') return false;
+      const e = entries[c.target];
+      return !!(e.quantity && e.unitPrice) && Math.round(e.quantity * e.unitPrice) === c.to;
+    });
+    if (agree.length === 1) chosen = agree;
+  }
+  const status = chosen.length === 1 ? 'repaired' : chosen.length > 1 ? 'ambiguous' : 'mismatch';
+  return { status, basis: 'sales', written, computed: salesSum, repairs: chosen };
 }
 
 function cashPortion(e: ProposedEntry): Kobo {
