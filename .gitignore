@@ -8,3 +8,4 @@ data/
 eval/private/
 node_modules/
 .DS_Store
+eval/samples/*.png

@@ -3,7 +3,7 @@
 // only then does code post them, with balanced postings and a chained hash.
 
 import { DatabaseSync } from 'node:sqlite';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Kobo } from './money.ts';
 import { normalizeName, type Flag, type ProposedEntry } from './verify.ts';
 
@@ -69,6 +69,9 @@ CREATE INDEX IF NOT EXISTS postings_account ON postings (trader_id, account);
 CREATE TABLE IF NOT EXISTS stock_counts (
   trader_id INTEGER NOT NULL, item TEXT NOT NULL, count INTEGER NOT NULL,
   evidence_id TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS state (trader_id INTEGER PRIMARY KEY, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS passports (
+  token TEXT PRIMARY KEY, trader_id INTEGER NOT NULL, created_at INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
 `;
 
 export class Ledger {
@@ -142,6 +145,11 @@ export class Ledger {
     const data = { ...pickProposed(e), ...patch };
     this.db.prepare('UPDATE entries SET data = ?, flags = ? WHERE id = ?').run(JSON.stringify(data), '[]', id);
     return this.entry(id)!;
+  }
+
+  /** Replace the checks recorded on a proposed entry (after the trader corrects it). */
+  setFlags(id: string, flags: Flag[]): void {
+    this.db.prepare("UPDATE entries SET flags = ? WHERE id = ? AND status = 'proposed'").run(JSON.stringify(flags), id);
   }
 
   reject(ids: string[]): void {
@@ -273,6 +281,65 @@ export class Ledger {
   lastStockCount(traderId: number, item: string): { count: number; at: number } | null {
     const r = this.db.prepare('SELECT count, created_at FROM stock_counts WHERE trader_id = ? AND item = ? ORDER BY created_at DESC LIMIT 1').get(traderId, item) as any;
     return r ? { count: r.count, at: r.created_at } : null;
+  }
+
+  /** The latest count of every item. */
+  stock(traderId: number): { item: string; count: number; at: number }[] {
+    return (this.db.prepare('SELECT item, count, MAX(created_at) AS at FROM stock_counts WHERE trader_id = ? GROUP BY item ORDER BY item').all(traderId) as any[])
+      .map((r) => ({ item: r.item, count: r.count, at: r.at }));
+  }
+
+  /** Latest unit price per item from confirmed sales, for flyers and the agent. */
+  prices(traderId: number): Map<string, { item: string; unit: string | null; unitPrice: Kobo }> {
+    const out = new Map<string, { item: string; unit: string | null; unitPrice: Kobo }>();
+    for (const e of this.confirmed(traderId)) {
+      if (e.kind === 'sale' && e.item && e.unitPrice) out.set(normalizeName(e.item), { item: e.item, unit: e.unit, unitPrice: e.unitPrice });
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------------------ conversation state and passports
+
+  getState<T extends object>(traderId: number): Partial<T> {
+    const r = this.db.prepare('SELECT data FROM state WHERE trader_id = ?').get(traderId) as any;
+    return r ? JSON.parse(r.data) : {};
+  }
+
+  setState(traderId: number, data: object): void {
+    this.db.prepare('INSERT INTO state (trader_id, data) VALUES (?, ?) ON CONFLICT (trader_id) DO UPDATE SET data = excluded.data')
+      .run(traderId, JSON.stringify(data));
+  }
+
+  /** A shareable lender link. Creating a new one revokes the old ones. */
+  newPassport(traderId: number): string {
+    this.db.prepare('UPDATE passports SET revoked = 1 WHERE trader_id = ?').run(traderId);
+    const token = randomBytes(12).toString('base64url');
+    this.db.prepare('INSERT INTO passports (token, trader_id, created_at) VALUES (?, ?, ?)').run(token, traderId, Date.now());
+    return token;
+  }
+
+  revokePassports(traderId: number): void {
+    this.db.prepare('UPDATE passports SET revoked = 1 WHERE trader_id = ?').run(traderId);
+  }
+
+  passportTrader(token: string): Trader | null {
+    const r = this.db.prepare('SELECT t.* FROM passports p JOIN traders t ON t.id = p.trader_id WHERE p.token = ? AND p.revoked = 0').get(token) as any;
+    return r ? { id: r.id, channel: r.channel, channelUser: r.channel_user, name: r.name, business: r.business, language: r.language } : null;
+  }
+
+  traders(): Trader[] {
+    return (this.db.prepare('SELECT * FROM traders').all() as any[])
+      .map((r) => ({ id: r.id, channel: r.channel, channelUser: r.channel_user, name: r.name, business: r.business, language: r.language }));
+  }
+
+  /** Erase everything about a trader (their right to be forgotten). Returns evidence file paths to delete. */
+  forget(traderId: number): string[] {
+    const paths = (this.db.prepare('SELECT path FROM evidence WHERE trader_id = ? AND path IS NOT NULL').all(traderId) as any[]).map((r) => r.path as string);
+    for (const t of ['postings', 'entries', 'evidence', 'stock_counts', 'state', 'passports']) {
+      this.db.prepare(`DELETE FROM ${t} WHERE trader_id = ?`).run(traderId);
+    }
+    this.db.prepare('DELETE FROM traders WHERE id = ?').run(traderId);
+    return paths;
   }
 }
 
