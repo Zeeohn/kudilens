@@ -71,6 +71,9 @@ const en = {
   deleted: 'Done. Everything is erased.',
   error: '😓 Something went wrong on my side. Please try again in a minute.',
   tooBig: 'That file is too large. Please send a smaller photo or a voice note under 5 minutes.',
+  notHeard: "🎧 I couldn't hear that voice note clearly. Please send it again, a little closer to the phone, or type it.",
+  stillOwes: 'still owes',
+  fullyPaid: 'fully paid ✅',
   unknownCustomer: 'matched to',
   help: 'Things you can do:\n📸 photo of a page → I record it\n🎙️ voice note in English, Pidgin, Yorùbá, Hausa or Igbo\n/today · /week: your summary\n/debtors: who owes you + reminders\n/stock: count a shelf from a photo\n/flyer: WhatsApp status flyer\n/passport: share your records with a lender\n/language · /deleteme',
 };
@@ -136,6 +139,9 @@ const pcm: Partial<Record<Key, string>> = {
   deleted: 'E don finish. Everything don clear.',
   error: '😓 Something spoil for my side. Abeg try again after one minute.',
   tooBig: 'That file too big. Send smaller picture or voice note wey no pass 5 minutes.',
+  notHeard: '🎧 I no hear that voice note well. Abeg send am again, hold the phone close small, or type am.',
+  stillOwes: 'still dey owe',
+  fullyPaid: 'don pay finish ✅',
 };
 
 const TABLES: Record<Lang, Partial<Record<Key, string>>> = { en, pcm, yo: {}, ha: {}, ig: {} };

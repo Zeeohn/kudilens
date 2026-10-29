@@ -6,7 +6,7 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readPage, readVoice, readText } from '../src/extract.ts';
-import { toWav } from '../src/media.ts';
+import { toWav, wavSeconds } from '../src/media.ts';
 import { Meta } from '../src/meta.ts';
 import { fromNaira } from '../src/money.ts';
 import { misreadings, normalizeName, reconcileTotal, type ProposedEntry } from '../src/verify.ts';
@@ -57,8 +57,8 @@ if (what === 'pages' || what === 'all') {
 
 if (what === 'voice' || what === 'all') {
   const routes: Record<string, (wav: Uint8Array, lang: string) => Promise<ProposedEntry[]>> = {
-    'spark-1.3 listen → text': async (wav) => (await readVoice(meta, wav, { today: '2026-10-28', model: 'muse-spark-1.3' })).lines,
-    'spark-1.2 listen → text': async (wav) => (await readVoice(meta, wav, { today: '2026-10-28', model: 'muse-spark-1.2' })).lines,
+    'spark-1.3 listen → text': async (wav) => (await readVoice(meta, wav, { today: '2026-10-28', seconds: wavSeconds(wav), models: ['muse-spark-1.3'] })).lines,
+    'spark-1.2 listen → text': async (wav) => (await readVoice(meta, wav, { today: '2026-10-28', seconds: wavSeconds(wav), models: ['muse-spark-1.2'] })).lines,
     'voice-transcribe → text': async (wav) => (await readText(meta, (await meta.transcribe(wav)).transcript || '(empty)', { today: '2026-10-28' })).lines,
   };
   const byLang = new Map<string, Record<string, { m: number; t: number }>>();

@@ -283,7 +283,7 @@ export class App {
     await send({ text: t(lang, 'listening') });
     const wav = await toWav(audio);
     const seconds = wavSeconds(wav);
-    const opts = { today: this.today(), customers: this.o.ledger.knownCustomers(trader.id) };
+    const opts = this.readOptions(trader);
     const started = Date.now();
     // Routing: Muse Voice Transcribe is fast and cheap but has no Nigerian languages, so it
     // handles English speakers; everyone else goes straight to Muse Spark's native audio.
@@ -300,8 +300,13 @@ export class App {
         this.log('asr_fallback', { error: String(err).slice(0, 200) });
       }
     }
-    result ??= await readVoice(this.o.meta, wav, opts);
-    this.log('voice', { trader: trader.id, route, seconds: Math.round(seconds), ms: Date.now() - started, language: result.language, lines: result.lines.length });
+    if (!result) {
+      const r = await readVoice(this.o.meta, wav, { ...opts, seconds });
+      route = `spark-audio:${r.model}`;
+      result = r;
+    }
+    this.log('voice', { trader: trader.id, route, seconds: Math.round(seconds), ms: Date.now() - started, language: result.language, lines: result.lines.length, words: result.transcript.split(/\s+/).filter(Boolean).length });
+    if (!result.transcript.trim()) return send({ text: t(lang, 'notHeard') });
     const { evidence } = await this.storeEvidence(trader, 'voice', audio, 'audio/ogg', { route, language: result.language, transcript: result.transcript });
 
     const heard = `🎙️ “${result.transcript.slice(0, 600)}”${result.language !== 'english' && result.english ? `\n🇬🇧 ${result.english.slice(0, 600)}` : ''}`;
@@ -316,7 +321,7 @@ export class App {
   }
 
   private async onText(trader: Trader, st: State, text: string, send: Send): Promise<void> {
-    const r = await readText(this.o.meta, text, { today: this.today(), customers: this.o.ledger.knownCustomers(trader.id) });
+    const r = await readText(this.o.meta, text, this.readOptions(trader));
     if (r.intent !== 'record' || !r.lines.length) return this.onQuestion(trader, text, send);
     const { evidence } = await this.storeEvidence(trader, 'text', new TextEncoder().encode(`${Date.now()}\n${text}`), 'text/plain', { text });
     const batch = this.buildBatch(trader, evidence.id, r.lines);
@@ -372,11 +377,22 @@ export class App {
 
   // ------------------------------------------------------------------ proposals
 
+  private readOptions(trader: Trader) {
+    return {
+      today: this.today(),
+      customers: this.o.ledger.knownCustomers(trader.id),
+      debtors: this.o.ledger.debtors(trader.id).map((d) => ({ name: d.name, owed: d.owed })),
+    };
+  }
+
   /** Match names to known customers, run every check, store the proposal. */
   private buildBatch(trader: Trader, evidenceId: string | null, lines: ProposedEntry[]): string {
     const known = this.o.ledger.knownCustomers(trader.id);
+    const debtors = this.o.ledger.debtors(trader.id).map((d) => d.name);
     const fixed = lines.map((e) => {
-      const m = e.customer ? matchCustomer(e.customer, known) : null;
+      if (!e.customer) return e;
+      // A payment names someone who owes, so a short form ("Tunde") can match the one debtor it fits.
+      const m = matchCustomer(e.customer, known) ?? (e.kind === 'payment' ? matchShortName(e.customer, debtors) : null);
       return m ? { ...e, customer: m.name } : e;
     });
     const items = this.flagsFor(trader, fixed);
@@ -397,7 +413,7 @@ export class App {
         pendingCredit.set(key, (pendingCredit.get(key) ?? 0) + e.amount - (e.amountPaid ?? 0));
       }
       if (isDuplicate(e, confirmed.filter((c) => c.date === e.date))) {
-        flags.push({ code: 'duplicate', message: 'Looks like a line you already saved.' });
+        flags.push({ code: 'duplicate', message: e.kind === 'payment' ? 'The same payment is already saved for today. Save only if this is a second payment.' : 'Looks like a line you already saved.' });
       }
       return { entry: e, flags };
     });
@@ -418,9 +434,12 @@ export class App {
       return send({ text: t(lang, 'discarded') });
     }
     const out: string[] = [];
+    const owed = this.balancesAfter(trader, entries);
     entries.forEach((e, i) => {
       const warn = e.flags.length || (st.repair && st.repair.index === i);
-      out.push(`${i + 1}. ${warn ? '⚠️' : KIND_ICON[e.kind]} ${describe(e, lang)}`);
+      const after = e.kind === 'payment' && e.flags.every((f) => f.code === 'duplicate' || f.code === 'low_confidence') && owed[i] !== null
+        ? ` · ${owed[i]! > 0 ? `${t(lang, 'stillOwes')} ${formatNaira(owed[i]!)}` : t(lang, 'fullyPaid')}` : '';
+      out.push(`${i + 1}. ${warn ? '⚠️' : KIND_ICON[e.kind]} ${describe(e, lang)}${after}`);
       for (const f of e.flags.filter((f) => f.code !== 'low_confidence' || e.flags.length === 1)) out.push(`    ↳ ${f.message}`);
     });
     if (total) {
@@ -445,6 +464,19 @@ export class App {
     });
   }
 
+  /** What each customer will still owe after each line of a proposal (null when no customer is involved). */
+  private balancesAfter(trader: Trader, entries: ProposedEntry[]): (Kobo | null)[] {
+    const running = new Map<string, Kobo>();
+    return entries.map((e) => {
+      if (!e.customer || !(e.kind === 'payment' || (e.kind === 'sale' && e.paid !== 'paid'))) return null;
+      const key = normalizeName(e.customer);
+      const before = running.get(key) ?? this.o.ledger.outstanding(trader.id, e.customer);
+      const after = e.kind === 'payment' ? before - e.amount : before + e.amount - (e.amountPaid ?? 0);
+      running.set(key, after);
+      return after;
+    });
+  }
+
   private async confirmBatch(trader: Trader, st: State, batchId: string, send: Send): Promise<void> {
     const lang = trader.language;
     if (!batchId || st.batch !== batchId) return send({ text: t(lang, 'nothingPending') });
@@ -457,7 +489,12 @@ export class App {
     this.log('confirm', { trader: trader.id, n: done.length });
     const s = this.o.ledger.summary(trader.id, this.today(), this.today());
     const quick = s.entries ? `\n${t(lang, 'sales')}: **${formatNaira(s.sales)}** · ${t(lang, 'collected')}: ${formatNaira(s.collected)} · ${t(lang, 'credit')}: ${formatNaira(s.creditGiven)}` : '';
-    return send({ text: t(lang, 'saved', { n: done.length, seq: head.seq, hash: head.hash.slice(0, 8) }) + quick });
+    const paidBy = [...new Set(done.filter((e) => e.kind === 'payment' && e.customer).map((e) => e.customer!))];
+    const debts = paidBy.map((name) => {
+      const left = this.o.ledger.outstanding(trader.id, name);
+      return `💵 ${name}: ${left > 0 ? `${t(lang, 'stillOwes')} **${formatNaira(left)}**` : t(lang, 'fullyPaid')}`;
+    });
+    return send({ text: t(lang, 'saved', { n: done.length, seq: head.seq, hash: head.hash.slice(0, 8) }) + quick + (debts.length ? `\n${debts.join('\n')}` : '') });
   }
 
   // ------------------------------------------------------------------ reports
@@ -671,6 +708,17 @@ export function describe(e: StoredEntry | ProposedEntry, lang: string): string {
 /** Grow a model box by 2% on each side: handwriting runs past tight boxes. */
 function pad(b: [number, number, number, number]): [number, number, number, number] {
   return [Math.max(0, b[0] - 20), Math.max(0, b[1] - 15), Math.min(1000, b[2] + 20), Math.min(1000, b[3] + 15)];
+}
+
+/** "Tunde" → "Mama Tunde" when exactly one debtor's name contains every word of it. */
+export function matchShortName(name: string, candidates: string[]): { name: string; score: number } | null {
+  const words = normalizeName(name).split(' ').filter(Boolean);
+  if (!words.length) return null;
+  const hits = candidates.filter((c) => {
+    const have = normalizeName(c).split(' ');
+    return words.every((w) => have.includes(w));
+  });
+  return hits.length === 1 ? { name: hits[0], score: 0.75 } : null;
 }
 
 function colorDot(hex: string): string {

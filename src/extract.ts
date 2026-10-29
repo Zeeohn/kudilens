@@ -63,7 +63,7 @@ const RULES = `You keep the books for a Nigerian market trader. Read what they r
 Conventions traders use:
 - Amounts in naira: "5,000", "5000/=", "N5000", "5k" = 5000. "paint", "mudu" and "derica" are measures. "@" or "x" means per unit.
 - "owe", "credit", "on credit", "go pay", "bal" (balance) = sold on credit. "paid 4,000 bal 5,000" on a 9,000 sale = partial, amountPaid 4000.
-- "X paid 3,000" with no goods = kind "payment" (a customer paying a debt).
+- A customer paying back all or PART of what they owe ("X paid 3,000", "Tunde don pay 50k", "she pay half", "she balance me", "e remain 20k") = kind "payment", amount = what was paid NOW. If they only say what is left ("remain 20k"), amount = what the customer owed (see below) minus what is left; "half" = half of what they owe. customer = the debtor's name as written in the books.
 - Goods the trader bought to resell ("supply", "bought", "restock") = "stock_in"; "I owe" on a supply means paid "owed" and customer = the supplier.
 - Running costs (transport, light/NEPA, rent, levy, food, airtime) = "expense".
 - "transfer" / "trf" = transfer, "POS" = pos; otherwise "cash" for paid lines, "unknown" if nothing suggests it.
@@ -95,18 +95,22 @@ interface RawLine {
   customer: string | null; dueDate: string | null; rawText: string; box: number[] | null; confidence: number;
 }
 
-function context(today: string, customers: string[]): string {
-  const known = customers.length ? `\nCustomers and suppliers already in this trader's books (reuse these spellings when it is clearly the same person): ${customers.slice(0, 80).join(', ')}.` : '';
-  return `Today is ${today} (Africa/Lagos). Dates written as DD/MM/YY are day first.${known}`;
+export interface ReadOptions { today: string; customers?: string[]; debtors?: { name: string; owed: Kobo }[] }
+
+function context(o: ReadOptions): string {
+  const customers = o.customers ?? [];
+  const known = customers.length ? `\nCustomers and suppliers already in this trader's books (reuse these spellings when it is clearly the same person, e.g. "Tunde" for "Mama Tunde" if there is only one Tunde): ${customers.slice(0, 80).join(', ')}.` : '';
+  const owing = o.debtors?.length ? `\nWho owes the trader right now: ${o.debtors.slice(0, 40).map((d) => `${d.name} ₦${(d.owed / 100).toLocaleString('en-NG')}`).join('; ')}.` : '';
+  return `Today is ${o.today} (Africa/Lagos). Dates written as DD/MM/YY are day first.${known}${owing}`;
 }
 
-export async function readPage(meta: Meta, image: { bytes: Uint8Array; mime: string }, opts: { today: string; customers?: string[] }): Promise<PageResult> {
+export async function readPage(meta: Meta, image: { bytes: Uint8Array; mime: string }, opts: ReadOptions): Promise<PageResult> {
   const raw = await meta.structured<{ isLedger: boolean; pageDate: string | null; lines: RawLine[]; writtenTotal: number | null; writtenTotalText: string | null; note: string }>({
     model: MODELS.reason,
     name: 'ledger_page',
     schema: PAGE_SCHEMA,
     effort: 'medium',
-    system: `${RULES}\n\nYou are looking at a photo of a page from the trader's book. Lines without their own date take the page date. Give each line's box on a 0–1000 scale of the full image.\n${context(opts.today, opts.customers ?? [])}`,
+    system: `${RULES}\n\nYou are looking at a photo of a page from the trader's book. Lines without their own date take the page date. Give each line's box on a 0–1000 scale of the full image.\n${context(opts)}`,
     parts: [imagePart(image.bytes, image.mime), textPart('Read this page.')],
   });
   return {
@@ -130,37 +134,59 @@ export const LISTEN_SCHEMA = {
   },
 };
 
+export interface Heard { transcript: string; language: string; english: string; model: string }
+
 /**
  * Muse Spark listens to the voice note directly, so Pidgin, Yoruba, Hausa and Igbo work
  * (Muse Voice Transcribe has no Nigerian languages). Two steps: listen (transcript +
  * translation, a small schema the audio model keeps to), then read the text into entries.
+ * Audio models sometimes return nothing useful (or echo the instruction), so a transcript
+ * far too short for the length of the recording is retried on the next model.
  */
-export async function listen(meta: Meta, wav: Uint8Array, model: string = MODELS.audio): Promise<{ transcript: string; language: string; english: string }> {
-  return meta.structured({
-    model,
-    name: 'transcript',
-    schema: LISTEN_SCHEMA,
-    effort: 'minimal',
-    system: 'Transcribe this voice note from a Nigerian market trader word for word, in the language spoken (English, Nigerian Pidgin, Yoruba, Hausa or Igbo, often mixed), then translate it to English. Write numbers as digits. Output only what was said; never add words.',
-    parts: [audioPart(wav), textPart('Transcribe.')],
-  });
+export async function listen(meta: Meta, wav: Uint8Array, opts: { seconds: number; models?: string[] }): Promise<Heard> {
+  const models = opts.models ?? [MODELS.audio, 'muse-spark-1.2'];
+  let best: Heard | null = null;
+  for (const model of models) {
+    const h = await meta.structured<Omit<Heard, 'model'>>({
+      model,
+      name: 'transcript',
+      schema: LISTEN_SCHEMA,
+      effort: 'minimal',
+      system: 'You are a transcriber. The user message is a voice note from a Nigerian market trader. Write down word for word what the speaker says, in the language spoken (English, Nigerian Pidgin, Yoruba, Hausa or Igbo, often mixed), then translate it to English. Write numbers as digits. Never add, summarise or answer; if nothing is audible, return an empty transcript.',
+      parts: [audioPart(wav)],
+    }).catch(() => null);
+    if (!h) continue;
+    const heard = { ...h, model };
+    if (plausibleTranscript(heard.transcript, opts.seconds)) return heard;
+    if (!best || heard.transcript.length > best.transcript.length) best = heard;
+  }
+  return best ?? { transcript: '', language: 'other', english: '', model: models[0] };
 }
 
-export async function readVoice(meta: Meta, wav: Uint8Array, opts: { today: string; customers?: string[]; model?: string }): Promise<VoiceResult> {
-  const heard = await listen(meta, wav, opts.model);
+/** People speak about 2–3 words a second; under a third of a word per second means we missed it. */
+export function plausibleTranscript(text: string, seconds: number): boolean {
+  const t = text.trim();
+  if (!t || /^(transcribe|transcript|listen)[.!]?$/i.test(t)) return false;
+  const words = t.split(/\s+/).length;
+  return seconds < 3 || words >= Math.min(6, seconds / 3);
+}
+
+export async function readVoice(meta: Meta, wav: Uint8Array, opts: ReadOptions & { seconds: number; models?: string[] }): Promise<VoiceResult & { model: string }> {
+  const heard = await listen(meta, wav, opts);
+  if (!heard.transcript.trim()) return { transcript: '', language: heard.language, english: '', intent: 'other', lines: [], question: null, model: heard.model };
   const text = heard.language === 'english' ? heard.transcript : `${heard.transcript}\n(English: ${heard.english})`;
   const r = await readText(meta, text, opts);
-  return { ...r, transcript: heard.transcript, language: heard.language, english: heard.english };
+  return { ...r, transcript: heard.transcript, language: heard.language, english: heard.english, model: heard.model };
 }
 
 /** Same reading for typed messages ("sold 3 bags rice to Bisi 7500, she go pay Friday"). */
-export async function readText(meta: Meta, text: string, opts: { today: string; customers?: string[] }): Promise<VoiceResult> {
+export async function readText(meta: Meta, text: string, opts: ReadOptions): Promise<VoiceResult> {
   const raw = await meta.structured<{ transcript: string; language: string; english: string; intent: VoiceResult['intent']; lines: RawLine[]; question: string | null }>({
     model: MODELS.reason,
     name: 'text_note',
     schema: VOICE_SCHEMA,
     effort: 'minimal',
-    system: `${RULES}\n\nThe trader typed or said a message. If it records transactions, intent is "record". If it asks about their business (sales, debts, stock), intent is "question". Use box null; transcript is the message itself.\n${context(opts.today, opts.customers ?? [])}`,
+    system: `${RULES}\n\nThe trader typed or said a message. If it records transactions, intent is "record". If it asks about their business (sales, debts, stock), intent is "question". Use box null; transcript is the message itself.\n${context(opts)}`,
     parts: [textPart(text)],
   });
   return { ...raw, lines: raw.lines.map((l) => toEntry(l, opts.today)) };

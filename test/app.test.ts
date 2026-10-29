@@ -135,3 +135,18 @@ test('channel markup is escaped and converted', () => {
   assert.equal(html('**₦5,000** <b>'), '<b>₦5,000</b> &lt;b&gt;');
   assert.equal(wa('**₦5,000**'), '*₦5,000*');
 });
+
+test('short names match the one debtor they fit; titles still keep people apart', async () => {
+  const { matchShortName } = await import('../src/app.ts');
+  assert.equal(matchShortName('Tunde', ['Mama Tunde', 'Bisi'])?.name, 'Mama Tunde');
+  assert.equal(matchShortName('Tunde', ['Mama Tunde', 'Baba Tunde']), null);
+  assert.equal(matchShortName('Chinedu', ['Mama Tunde']), null);
+});
+
+test('transcripts far too short for the recording are rejected', async () => {
+  const { plausibleTranscript } = await import('../src/extract.ts');
+  assert.equal(plausibleTranscript('Transcribe.', 8), false);
+  assert.equal(plausibleTranscript('', 5), false);
+  assert.equal(plausibleTranscript('Tunde don pay 50k out of the 100k she dey owe', 8), true);
+  assert.equal(plausibleTranscript('Okay', 2), true);
+});

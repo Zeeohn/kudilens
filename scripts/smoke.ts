@@ -42,6 +42,18 @@ for (const step of (process.argv[2] ?? 'all').split(',')) {
   if (step === 'all' || step === 'shelf') {
     await say({ type: 'photo', text: 'stock', file: file('eval/samples/shelf.jpg') });
   }
+  if (step === 'payment') {
+    await say({ type: 'button', text: 'lang:pcm' });
+    await say({ type: 'text', text: 'Mama Tunde buy 2 bags rice 100k, she go pay next Monday' });
+    await say({ type: 'button', text: btn('ok:') });
+    await say({ type: 'text', text: 'Iya Bose take 3 crates egg 13,500 on credit' });
+    await say({ type: 'button', text: btn('ok:') });
+    await say({ type: 'voice', file: file(process.argv[3]) });
+    await say({ type: 'button', text: btn('ok:') });
+    await say({ type: 'text', text: 'Iya Bose don pay half' });
+    await say({ type: 'button', text: btn('ok:') });
+    await say({ type: 'text', text: 'Tunde balance me the remaining money' });
+  }
   if (step === 'voice') {
     await say({ type: 'button', text: `lang:${process.argv[4] ?? 'en'}` });
     await say({ type: 'voice', file: file(process.argv[3]) });
