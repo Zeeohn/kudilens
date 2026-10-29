@@ -41,8 +41,8 @@ See [eval/results.md](eval/results.md); run `node --env-file=.env eval/run.ts`. 
 Node 24+, ffmpeg. No npm dependencies.
 
 ```bash
-cp .env.example .env   # add MODEL_API_KEY and TG_TOKEN (WhatsApp optional)
-npm test               # 32 tests, no network
+cp .env.example .env   # add MODEL_API_KEY and TG_TOKEN (WhatsApp: docs/WHATSAPP-SETUP.md)
+npm test               # 34 tests, no network
 npm start              # Telegram (long polling) + web on :8080
 ```
 

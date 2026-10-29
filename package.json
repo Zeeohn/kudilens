@@ -8,6 +8,8 @@
   "scripts": {
     "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.ts\"",
     "start": "node --disable-warning=ExperimentalWarning src/main.ts",
-    "eval": "node eval/run.ts"
+    "eval": "node eval/run.ts",
+    "wa:check": "node --env-file=.env scripts/wa-check.ts",
+    "tunnel": "cloudflared tunnel --no-autoupdate --url http://localhost:8080"
   }
 }
