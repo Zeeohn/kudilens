@@ -118,8 +118,8 @@ export class Ledger {
 
   // ------------------------------------------------------------------ entries
 
-  propose(traderId: number, evidenceId: string | null, items: { entry: ProposedEntry; flags: Flag[] }[]): StoredEntry[] {
-    const batchId = randomUUID();
+  /** Store proposed entries in a new batch, or add them to an unconfirmed one. */
+  propose(traderId: number, evidenceId: string | null, items: { entry: ProposedEntry; flags: Flag[] }[], batchId: string = randomUUID()): StoredEntry[] {
     const now = Date.now();
     const stmt = this.db.prepare('INSERT INTO entries (id, trader_id, batch_id, evidence_id, data, flags, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
     for (const { entry, flags } of items) {

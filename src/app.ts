@@ -4,7 +4,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { answer } from './agent.ts';
-import { readPage, readText, readVoice, type VoiceResult } from './extract.ts';
+import { listen, readPage, readText, type Heard } from './extract.ts';
 import { t, LANG_FOR_MODEL, LANG_NAMES, type Lang } from './i18n.ts';
 import type { Ledger, StoredEntry, Trader } from './ledger.ts';
 import { annotate, annotatePixels, sniffMime, toWav, wavSeconds } from './media.ts';
@@ -137,7 +137,7 @@ export class App {
     if (!text) return;
     if (text.startsWith('/') || isCommandWord(text)) return this.onCommand(trader, st, text, send);
     if (!this.allow(trader.id)) return send({ text: '⏳ Slow down a little: try again in a few minutes.' });
-    if (st.batch && st.awaiting === 'fix') return this.onCorrection(trader, st, text, send);
+    if (this.pending(st)) return this.onFollowUp(trader, st, text, send, null);
     return this.onText(trader, st, text, send);
   }
 
@@ -283,34 +283,35 @@ export class App {
     await send({ text: t(lang, 'listening') });
     const wav = await toWav(audio);
     const seconds = wavSeconds(wav);
-    const opts = this.readOptions(trader);
     const started = Date.now();
     // Routing: Muse Voice Transcribe is fast and cheap but has no Nigerian languages, so it
     // handles English speakers; everyone else goes straight to Muse Spark's native audio.
     let route = 'spark-audio';
-    let result: VoiceResult | null = null;
+    let heard: Heard | null = null;
     if (lang === 'en') {
       try {
         const asr = await this.o.meta.transcribe(wav, { languageBias: ['en'] });
         if (asr.transcript.trim().split(/\s+/).length >= 3) {
-          result = await readText(this.o.meta, asr.transcript, opts);
-          route = 'voice-transcribe+spark-text';
+          heard = { transcript: asr.transcript, language: 'english', english: asr.transcript, model: MODELS.transcribe };
+          route = 'voice-transcribe';
         }
       } catch (err) {
         this.log('asr_fallback', { error: String(err).slice(0, 200) });
       }
     }
-    if (!result) {
-      const r = await readVoice(this.o.meta, wav, { ...opts, seconds });
-      route = `spark-audio:${r.model}`;
-      result = r;
+    if (!heard) {
+      heard = await listen(this.o.meta, wav, { seconds });
+      route = `spark-audio:${heard.model}`;
     }
-    this.log('voice', { trader: trader.id, route, seconds: Math.round(seconds), ms: Date.now() - started, language: result.language, lines: result.lines.length, words: result.transcript.split(/\s+/).filter(Boolean).length });
-    if (!result.transcript.trim()) return send({ text: t(lang, 'notHeard') });
-    const { evidence } = await this.storeEvidence(trader, 'voice', audio, 'audio/ogg', { route, language: result.language, transcript: result.transcript });
+    this.log('voice', { trader: trader.id, route, seconds: Math.round(seconds), ms: Date.now() - started, language: heard.language, words: heard.transcript.split(/\s+/).filter(Boolean).length });
+    if (!heard.transcript.trim()) return send({ text: t(lang, 'notHeard') });
+    const { evidence } = await this.storeEvidence(trader, 'voice', audio, 'audio/ogg', { route, language: heard.language, transcript: heard.transcript });
 
-    const heard = `🎙️ “${result.transcript.slice(0, 600)}”${result.language !== 'english' && result.english ? `\n🇬🇧 ${result.english.slice(0, 600)}` : ''}`;
-    await send({ text: heard });
+    await send({ text: `🎙️ “${heard.transcript.slice(0, 600)}”${heard.language !== 'english' && heard.english ? `\n🇬🇧 ${heard.english.slice(0, 600)}` : ''}` });
+    const text = heard.language === 'english' ? heard.transcript : `${heard.transcript}\n(English: ${heard.english})`;
+    // A voice note while lines are waiting is about those lines (or adds to them), same as a typed one.
+    if (this.pending(st)) return this.onFollowUp(trader, st, text, send, evidence.id);
+    const result = await readText(this.o.meta, text, this.readOptions(trader));
     if (result.intent === 'question' || (!result.lines.length && result.question)) {
       return this.onQuestion(trader, result.question ?? result.english ?? result.transcript, send);
     }
@@ -320,13 +321,21 @@ export class App {
     return this.sendProposal(trader, batch, null, send);
   }
 
-  private async onText(trader: Trader, st: State, text: string, send: Send): Promise<void> {
+  /** New lines from a typed or spoken note. Lines still waiting for confirmation are kept: the new ones join them. */
+  private async onText(trader: Trader, st: State, text: string, send: Send, evidenceId: string | null = null): Promise<void> {
     const r = await readText(this.o.meta, text, this.readOptions(trader));
     if (r.intent !== 'record' || !r.lines.length) return this.onQuestion(trader, text, send);
-    const { evidence } = await this.storeEvidence(trader, 'text', new TextEncoder().encode(`${Date.now()}\n${text}`), 'text/plain', { text });
-    const batch = this.buildBatch(trader, evidence.id, r.lines);
-    this.save(trader.id, { ...st, batch, repair: null, awaiting: null });
+    evidenceId ??= (await this.storeEvidence(trader, 'text', new TextEncoder().encode(`${Date.now()}\n${text}`), 'text/plain', { text })).evidence.id;
+    const open = this.pending(st);
+    const batch = this.buildBatch(trader, evidenceId, r.lines, open);
+    if (open) this.recheck(trader, open);
+    this.save(trader.id, { ...st, batch, repair: open ? st.repair : null, awaiting: null });
     return this.sendProposal(trader, batch, null, send);
+  }
+
+  /** The unconfirmed batch, if it still has lines waiting. */
+  private pending(st: State): string | null {
+    return st.batch && this.o.ledger.batch(st.batch).some((e) => e.status === 'proposed') ? st.batch : null;
   }
 
   private async onQuestion(trader: Trader, question: string, send: Send): Promise<void> {
@@ -338,22 +347,29 @@ export class App {
     return send({ text: r.text });
   }
 
-  /** "line 2 is 6,500", "remove 4", "Bisi paid 2,000 only": Muse Spark turns it into edits. */
-  private async onCorrection(trader: Trader, st: State, text: string, send: Send): Promise<void> {
-    const entries = this.o.ledger.batch(st.batch!).filter((e) => e.status === 'proposed');
-    const lines = entries.map((e, i) => ({ line: i + 1, kind: e.kind, item: e.item, quantity: e.quantity, unit: e.unit, unitPrice: e.unitPrice && e.unitPrice / 100, amount: e.amount / 100, paid: e.paid, amountPaid: e.amountPaid && e.amountPaid / 100, customer: e.customer, dueDate: e.dueDate, method: e.method }));
-    const r = await this.o.meta.structured<{ action: 'edit' | 'confirm' | 'cancel' | 'other'; edits: any[] }>({
+  /**
+   * A message (typed or spoken) while lines wait for confirmation: "line 2 is 6,500", "remove 4",
+   * "Emeka own na 20,000, he go pay Friday" fill in or fix those lines; anything new is added to them.
+   */
+  private async onFollowUp(trader: Trader, st: State, text: string, send: Send, evidenceId: string | null): Promise<void> {
+    const batch = st.batch!;
+    const entries = this.o.ledger.batch(batch).filter((e) => e.status === 'proposed');
+    const lines = entries.map((e, i) => ({ line: i + 1, kind: e.kind, item: e.item, quantity: e.quantity, unit: e.unit, unitPrice: e.unitPrice && e.unitPrice / 100, amount: e.amount / 100, paid: e.paid, amountPaid: e.amountPaid && e.amountPaid / 100, customer: e.customer, dueDate: e.dueDate, method: e.method, problems: e.flags.map((f) => f.message) }));
+    const r = await this.o.meta.structured<{ action: 'edit' | 'add' | 'confirm' | 'cancel' | 'other'; edits: any[]; newText: string | null }>({
       name: 'corrections',
       effort: 'low',
       schema: CORRECTION_SCHEMA,
-      system: `A trader is correcting entries you proposed (amounts in naira). Today is ${this.today()}. Return the edits they asked for. Use null for every field they did not change. "remove"/"comot"/"delete" a line = remove true. If they say it's fine/save, action is "confirm"; if they want to cancel everything, "cancel".`,
-      parts: [textPart(`Proposed lines:\n${JSON.stringify(lines)}\n\nTrader says: ${text}`)],
+      system: `A trader has unsaved lines you proposed (amounts in naira) and sent a follow-up message, typed or spoken in English, Pidgin, Yoruba, Hausa or Igbo. Today is ${this.today()}.
+- If it fixes or completes lines in the list (a missing amount, a wrong figure or name, a due date such as "she go pay Friday"), return those edits with action "edit". A line mentioned again with the missing detail is an EDIT of that line, never a new line. Use null for every field they did not change; give dates as YYYY-MM-DD. "remove"/"comot"/"delete" a line = remove true.
+- If it also records NEW transactions that are not in the list, copy only the words about those into newText (otherwise null). Action is "add" when there are no edits.
+- "save"/"it's fine"/"correct" = action "confirm"; cancel everything = "cancel"; a question or anything else = "other".`,
+      parts: [textPart(`Unsaved lines:\n${JSON.stringify(lines)}\n\nTrader says: ${text}`)],
     });
-    if (r.action === 'confirm') return this.confirmBatch(trader, st, st.batch!, send);
-    if (r.action === 'cancel') return this.onButton(trader, st, `del:${st.batch}`, send);
-    if (r.action === 'other' || !r.edits.length) {
+    if (r.action === 'confirm') return this.confirmBatch(trader, st, batch, send);
+    if (r.action === 'cancel') return this.onButton(trader, st, `del:${batch}`, send);
+    if (r.action === 'other' || (!r.edits.length && !r.newText)) {
       this.save(trader.id, { ...st, awaiting: null });
-      return this.onText(trader, { ...st, awaiting: null }, text, send);
+      return this.onText(trader, { ...st, awaiting: null }, text, send, evidenceId);
     }
     for (const ed of r.edits) {
       const e = entries[ed.line - 1];
@@ -370,9 +386,16 @@ export class App {
       patch.confidence = 1; // the trader said so
       this.o.ledger.amend(e.id, patch);
     }
-    this.recheck(trader, st.batch!);
+    if (r.newText?.trim()) {
+      const added = await readText(this.o.meta, r.newText, this.readOptions(trader));
+      if (added.lines.length) {
+        evidenceId ??= (await this.storeEvidence(trader, 'text', new TextEncoder().encode(`${Date.now()}\n${text}`), 'text/plain', { text })).evidence.id;
+        this.buildBatch(trader, evidenceId, added.lines, batch);
+      }
+    }
+    this.recheck(trader, batch);
     this.save(trader.id, { ...st, awaiting: null, repair: null });
-    return this.sendProposal(trader, st.batch!, null, send);
+    return this.sendProposal(trader, batch, null, send);
   }
 
   // ------------------------------------------------------------------ proposals
@@ -386,7 +409,7 @@ export class App {
   }
 
   /** Match names to known customers, run every check, store the proposal. */
-  private buildBatch(trader: Trader, evidenceId: string | null, lines: ProposedEntry[]): string {
+  private buildBatch(trader: Trader, evidenceId: string | null, lines: ProposedEntry[], into?: string | null): string {
     const known = this.o.ledger.knownCustomers(trader.id);
     const debtors = this.o.ledger.debtors(trader.id).map((d) => d.name);
     const fixed = lines.map((e) => {
@@ -396,7 +419,7 @@ export class App {
       return m ? { ...e, customer: m.name } : e;
     });
     const items = this.flagsFor(trader, fixed);
-    return this.o.ledger.propose(trader.id, evidenceId, items)[0].batchId;
+    return this.o.ledger.propose(trader.id, evidenceId, items, into ?? undefined)[0].batchId;
   }
 
   private flagsFor(trader: Trader, lines: ProposedEntry[]): { entry: ProposedEntry; flags: Flag[] }[] {
@@ -645,9 +668,10 @@ export class App {
 const nul = (type: string) => ({ type: [type, 'null'] });
 
 const CORRECTION_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['action', 'edits'],
+  type: 'object', additionalProperties: false, required: ['action', 'edits', 'newText'],
   properties: {
-    action: { type: 'string', enum: ['edit', 'confirm', 'cancel', 'other'] },
+    action: { type: 'string', enum: ['edit', 'add', 'confirm', 'cancel', 'other'] },
+    newText: nul('string'),
     edits: {
       type: 'array', items: {
         type: 'object', additionalProperties: false,
