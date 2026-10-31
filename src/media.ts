@@ -53,6 +53,12 @@ export function annotatePixels(image: Uint8Array, boxes: { x1: number; y1: numbe
   return ffmpeg(['-i', 'pipe:0', '-vf', ['scale=w=min(iw\\,1280):h=-2', ...filters].join(','), '-frames:v', '1', '-q:v', '3', '-f', 'image2', '-c:v', 'mjpeg', 'pipe:1'], image);
 }
 
+/** Cut one region out of a photo; the region is given as fractions of its width and height. */
+export function cropImage(image: Uint8Array, r: { x: number; y: number; w: number; h: number }): Promise<Uint8Array> {
+  const f = (v: number) => v.toFixed(4);
+  return ffmpeg(['-i', 'pipe:0', '-vf', `crop=w=iw*${f(r.w)}:h=ih*${f(r.h)}:x=iw*${f(r.x)}:y=ih*${f(r.y)}`, '-frames:v', '1', '-q:v', '2', '-f', 'image2', '-c:v', 'mjpeg', 'pipe:1'], image);
+}
+
 /**
  * Cut each box out of the photo into its own numbered tile, laid out on one sheet, so a vision
  * model judges one unit at a time instead of reading small numbers on a crowded shelf.

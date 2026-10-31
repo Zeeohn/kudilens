@@ -75,7 +75,7 @@ test('a photo of goods with no caption is counted as stock', async () => {
     ...base,
     async structured(o: { name: string }) {
       if (o.name === 'ledger_page') return { photoKind: 'goods', isLedger: false, pageDate: null, lines: [], writtenTotal: null, writtenTotalText: null, note: 'Sachets hanging on a wall.' };
-      if (o.name === 'shelf_items') return { items: [{ name: 'Gino Asun sachet', concept: 'sachet', unit: 'packet' }, { name: 'Party Jollof sachet', concept: 'green sachet', unit: 'packet' }] };
+      if (o.name === 'shelf_items') return { items: [{ name: 'Gino Asun sachet', concept: 'sachet', unit: 'packet', count: 6, how: '' }, { name: 'Party Jollof sachet', concept: 'green sachet', unit: 'packet', count: 9, how: 'stack of 9' }] };
       if (o.name === 'shelf_labels') return { labels: [...boxes.map((_, i) => ({ box: i + 1, item: i < 10 ? 1 : i < 13 ? 2 : 0 })), { box: 99, item: 1 }, { box: 1, item: 2 }] };
       return base.structured(o as never);
     },
@@ -86,8 +86,17 @@ test('a photo of goods with no caption is counted as stock', async () => {
   await h.say({ type: 'photo', file: async () => new Uint8Array(photo) });
   // Box 99 doesn't exist and box 1 is labelled twice: code keeps only the first label per real box.
   assert.match(h.text(), /Gino Asun sachet: \*\*10\*\*/);
-  assert.match(h.text(), /Party Jollof sachet: \*\*3\*\*/);
+  // The detector saw 3 Jollof sachets; Muse Spark counted a stack of 9: the larger count wins.
+  assert.match(h.text(), /Party Jollof sachet: \*\*9\*\*/);
   assert.doesNotMatch(h.text(), /couldn't find business records/);
+  // The trader corrects a number right after the count.
+  await h.say({ text: 'jollof na 14, asun 12' });
+  assert.match(h.text(), /Updated: Party Jollof sachet 14, Gino Asun sachet 12/);
+  const trader = h.ledger.trader('test', '7');
+  assert.deepEqual(h.ledger.stock(trader.id).map((x) => [x.item, x.count]), [['Gino Asun sachet', 12], ['Party Jollof sachet', 14]]);
+  // Anything that isn't a correction of a counted item goes through as usual.
+  await h.say({ text: 'paid 2000' });
+  assert.doesNotMatch(h.text(), /Updated:/);
 });
 
 test('overlapping boxes from two searches count once', () => {
