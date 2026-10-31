@@ -73,6 +73,20 @@ test('the hash chain verifies and detects tampering', () => {
   const bad = l.verifyChain(t.id);
   assert.equal(bad.ok, false);
   assert.equal(bad.brokenAt, 2);
+  assert.equal(bad.reason, 'changed');
+  assert.equal(bad.intact, 1);
+  assert.deepEqual(bad.record, { seq: 2, date: second.date, kind: 'sale', item: 'rice', amount: 900000 });
+});
+
+test('deleting a sealed record breaks the chain at the next one', () => {
+  const { l, t, evidence } = setup();
+  post(l, t.id, evidence.id, [entry({ amount: 100000 }), entry({ amount: 200000 }), entry({ amount: 300000 })]);
+  l.db.prepare('DELETE FROM entries WHERE seq = 2 AND trader_id = ?').run(t.id);
+  const bad = l.verifyChain(t.id);
+  assert.equal(bad.ok, false);
+  assert.equal(bad.brokenAt, 3);
+  assert.equal(bad.reason, 'missing');
+  assert.equal(bad.intact, 1);
 });
 
 test('changing the evidence fingerprint also breaks the chain', () => {

@@ -46,6 +46,16 @@ export interface StoredEntry extends ProposedEntry {
 
 export interface Posting { account: string; amount: Kobo } // debit > 0, credit < 0
 
+export interface ChainCheck {
+  ok: boolean;
+  length: number;
+  head: string;
+  brokenAt: number | null;
+  intact: number; // records verified before the break (all of them when ok)
+  reason: 'changed' | 'missing' | null;
+  record: { seq: number; date: string | null; kind: string; item: string | null; amount: Kobo } | null;
+}
+
 export const GENESIS = '0'.repeat(64);
 
 const SCHEMA = `
@@ -198,17 +208,29 @@ export class Ledger {
     return rows.map(rowToEntry).filter((e) => (!from || (e.date ?? '') >= from) && (!to || (e.date ?? '') <= to));
   }
 
-  /** Recompute the whole chain. Any edit to an entry or its evidence fingerprint breaks it. */
-  verifyChain(traderId: number): { ok: boolean; length: number; head: string; brokenAt: number | null } {
+  /**
+   * Recompute the whole chain. Any edit to an entry or its evidence fingerprint breaks it.
+   * On a break, `reason` says whether the record itself no longer matches its seal ('changed')
+   * or a record before it was removed, added or reordered ('missing'), and `record` describes
+   * the broken record as it reads now (no customer name: this goes to lenders).
+   */
+  verifyChain(traderId: number): ChainCheck {
     let prev = GENESIS;
     const entries = this.confirmed(traderId);
-    for (const e of entries) {
+    for (const [i, e] of entries.entries()) {
       const evidenceSha = e.evidenceId ? this.evidence(e.evidenceId)?.sha256 ?? null : null;
       const expected = chainHash(prev, e.seq!, pickProposed(e), evidenceSha);
-      if (e.prevHash !== prev || e.hash !== expected) return { ok: false, length: entries.length, head: prev, brokenAt: e.seq };
+      const linked = e.seq === i + 1 && e.prevHash === prev;
+      if (!linked || e.hash !== expected) {
+        return {
+          ok: false, length: entries.length, head: prev, brokenAt: e.seq, intact: i,
+          reason: linked ? 'changed' : 'missing',
+          record: { seq: e.seq!, date: e.date, kind: e.kind, item: e.item, amount: e.amount },
+        };
+      }
       prev = e.hash!;
     }
-    return { ok: true, length: entries.length, head: prev, brokenAt: null };
+    return { ok: true, length: entries.length, head: prev, brokenAt: null, intact: entries.length, reason: null, record: null };
   }
 
   // ------------------------------------------------------------------ balances

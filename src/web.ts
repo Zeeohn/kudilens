@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { addDays } from './app.ts';
-import type { Ledger, Trader } from './ledger.ts';
+import type { ChainCheck, Ledger, Trader } from './ledger.ts';
 import { formatNaira } from './money.ts';
 import type { WhatsApp } from './channels/whatsapp.ts';
 
@@ -46,6 +46,17 @@ export function passportData(ledger: Ledger, trader: Trader, today: string) {
     weeks, chain,
     topItems: s90.topItems.slice(0, 3).map((i) => i.item),
   };
+}
+
+/** What a lender reads after Verify. Plain text; the page escapes it. */
+export function chainMessage(c: ChainCheck): string {
+  if (c.ok) return `Chain intact: all ${c.length} records match their seals.`;
+  const r = c.record!;
+  const now = [r.kind, r.item, formatNaira(r.amount), r.date].filter(Boolean).join(' · ');
+  const before = c.intact > 1 ? ` Records #1–${c.intact} are intact.` : c.intact === 1 ? ' Record #1 is intact.' : '';
+  return c.reason === 'changed'
+    ? `Record #${r.seq} was changed after it was sealed. It now reads: ${now}, which doesn't match its seal.${before}`
+    : `The chain breaks at record #${r.seq}: a record before it was removed, added or reordered.${before}`;
 }
 
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -90,7 +101,7 @@ function passportHtml(token: string, d: ReturnType<typeof passportData>): string
 <div class="card"><h2>Weekly sales, last 12 weeks</h2>${bars(d.weeks)}${d.topItems.length ? `<p class="muted">Best sellers: ${d.topItems.map(esc).join(', ')}</p>` : ''}</div>
 <div class="card"><h2>Were these records changed after they were saved?</h2>
 <p>Every confirmed record is sealed with a SHA-256 hash that includes the previous record and the fingerprint of the photo or voice note it came from. Changing any old record breaks every seal after it.</p>
-<div class="row"><button id="verify">Verify now</button><span id="result" aria-live="polite">${d.chain.ok ? `<span class="ok">✓ ${d.records} records, chain intact</span>` : '<span class="bad">✗ chain broken</span>'}</span></div>
+<div class="row"><button id="verify">Verify now</button><span id="result" aria-live="polite"><span class="${d.chain.ok ? 'ok">✓ ' : 'bad">✗ '}${esc(chainMessage(d.chain))}</span></span></div>
 <p><code id="head">Latest seal: ${esc(d.chain.head)}</code></p></div>
 <div class="card row"><div id="qr"></div><p class="muted">Scan to open this passport on another phone.<br>The trader can cancel this link at any time.</p></div>
 <p class="muted">What this is: the trader's own records, read from their book and confirmed by them, with arithmetic checked by KudiLens and protected against later edits. It is not an audit or a credit score. Built with Meta Muse Spark and SAM 3.1.</p>
@@ -100,7 +111,7 @@ function passportHtml(token: string, d: ReturnType<typeof passportData>): string
 try{var q=qrcode(0,'M');q.addData(location.href);q.make();document.getElementById('qr').innerHTML=q.createSvgTag({scalable:true,margin:2});}catch(e){}
 document.getElementById('verify').onclick=async function(){var r=document.getElementById('result');r.textContent='Checking every seal…';
 try{var j=await (await fetch('/api/passport/${esc(token)}/verify',{method:'POST'})).json();
-r.innerHTML=j.ok?'<span class="ok">✓ Verified just now: '+j.length+' records, chain intact</span>':'<span class="bad">✗ Broken at record '+j.brokenAt+'</span>';
+var m=document.createElement('span');m.className=j.ok?'ok':'bad';m.textContent=(j.ok?'✓ Verified just now. ':'✗ Verified just now. ')+j.message;r.replaceChildren(m);
 document.getElementById('head').textContent='Latest seal: '+j.head;}catch(e){r.textContent='Could not reach the server.';}};
 </script></body></html>`;
 }
@@ -165,7 +176,8 @@ export function startWeb(o: WebOptions, port: number): Server {
         verifyHits.set(verify[1], [...hits, now]);
         const trader = o.ledger.passportTrader(verify[1]);
         if (!trader) return send(404, '{"error":"not found"}', 'application/json');
-        return send(200, JSON.stringify(o.ledger.verifyChain(trader.id)), 'application/json', { 'Cache-Control': 'no-store' });
+        const check = o.ledger.verifyChain(trader.id);
+        return send(200, JSON.stringify({ ...check, message: chainMessage(check) }), 'application/json', { 'Cache-Control': 'no-store' });
       }
 
       if (url.pathname === '/webhook/whatsapp' && o.whatsapp) {

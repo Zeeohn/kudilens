@@ -116,6 +116,15 @@ test('passport page and live verification over HTTP', async () => {
     const v = await (await fetch(`${base}/api/passport/${token}/verify`, { method: 'POST' })).json();
     assert.equal(v.ok, true);
     assert.equal(v.length, 3);
+    // Someone adds a zero to a sealed record that names a customer, straight in the database.
+    const trader = h.ledger.passportTrader(token)!;
+    const target = h.ledger.confirmed(trader.id).find((e) => e.customer)!;
+    h.ledger.db.prepare('UPDATE entries SET data = ? WHERE id = ?').run(JSON.stringify({ ...target, amount: target.amount * 10 }), target.id);
+    const bad = await (await fetch(`${base}/api/passport/${token}/verify`, { method: 'POST' })).json();
+    assert.equal(bad.ok, false);
+    assert.match(bad.message, new RegExp(`Record #${target.seq} was changed after it was sealed`));
+    assert.doesNotMatch(JSON.stringify(bad), new RegExp(target.customer!));
+    assert.match(await (await fetch(`${base}/p/${token}`)).text(), /was changed after it was sealed/);
     assert.equal((await fetch(`${base}/p/notavalidtoken`)).status, 404);
   } finally {
     server.close();
