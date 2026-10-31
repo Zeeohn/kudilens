@@ -33,8 +33,12 @@ const LINE = {
 export const PAGE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['isLedger', 'pageDate', 'lines', 'writtenTotal', 'writtenTotalText', 'note'],
+  required: ['photoKind', 'isLedger', 'pageDate', 'lines', 'writtenTotal', 'writtenTotalText', 'note'],
   properties: {
+    photoKind: {
+      type: 'string', enum: ['book_page', 'goods', 'other'],
+      description: 'book_page: handwritten or printed business records. goods: goods for sale (on shelves, hanging from a wall or rope in strips of sachets, on a table or tray, in crates or bags, stacked on the floor), labelled or not, priced or not. other: anything else',
+    },
     isLedger: { type: 'boolean', description: 'false if the image is not a page of business records' },
     pageDate: nullable('string', { description: 'YYYY-MM-DD from the page heading' }),
     lines: { type: 'array', items: LINE },
@@ -71,7 +75,10 @@ Conventions traders use:
 - Copy rawText exactly. Never invent a line or a number you cannot see or hear; if a number is unreadable use null and a low confidence.
 - confidence: 0.95+ only when every digit is clear.`;
 
+export type PhotoKind = 'book_page' | 'goods' | 'other';
+
 export interface PageResult {
+  photoKind: PhotoKind;
   isLedger: boolean;
   pageDate: string | null;
   lines: ProposedEntry[];
@@ -105,7 +112,7 @@ function context(o: ReadOptions): string {
 }
 
 export async function readPage(meta: Meta, image: { bytes: Uint8Array; mime: string }, opts: ReadOptions): Promise<PageResult> {
-  const raw = await meta.structured<{ isLedger: boolean; pageDate: string | null; lines: RawLine[]; writtenTotal: number | null; writtenTotalText: string | null; note: string }>({
+  const raw = await meta.structured<{ photoKind: PhotoKind; isLedger: boolean; pageDate: string | null; lines: RawLine[]; writtenTotal: number | null; writtenTotalText: string | null; note: string }>({
     model: MODELS.reason,
     name: 'ledger_page',
     schema: PAGE_SCHEMA,
@@ -114,6 +121,7 @@ export async function readPage(meta: Meta, image: { bytes: Uint8Array; mime: str
     parts: [imagePart(image.bytes, image.mime), textPart('Read this page.')],
   });
   return {
+    photoKind: raw.photoKind ?? (raw.isLedger ? 'book_page' : 'other'),
     isLedger: raw.isLedger,
     pageDate: validDate(raw.pageDate),
     lines: raw.lines.map((l) => toEntry(l, validDate(raw.pageDate) ?? opts.today)),

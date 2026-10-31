@@ -7,8 +7,8 @@ import { answer } from './agent.ts';
 import { listen, readPage, readText, type Heard } from './extract.ts';
 import { t, LANG_FOR_MODEL, LANG_NAMES, type Lang } from './i18n.ts';
 import type { Ledger, StoredEntry, Trader } from './ledger.ts';
-import { annotate, annotatePixels, sniffMime, toWav, wavSeconds } from './media.ts';
-import { imagePart, MODELS, textPart, type Meta } from './meta.ts';
+import { annotate, annotatePixels, contactSheet, sniffMime, toWav, wavSeconds } from './media.ts';
+import { imagePart, MODELS, textPart, type Meta, type SamBox } from './meta.ts';
 import { formatNaira, fromNaira, type Kobo } from './money.ts';
 import { checkEntry, checkPayment, isDuplicate, matchCustomer, normalizeName, reconcileTotal, type Flag, type ProposedEntry, type TotalCheck } from './verify.ts';
 
@@ -254,9 +254,10 @@ export class App {
     await send({ text: t(lang, 'reading') });
     const started = Date.now();
     const page = await readPage(this.o.meta, { bytes, mime }, { today: this.today(), customers: this.o.ledger.knownCustomers(trader.id) });
-    this.log('page', { trader: trader.id, ms: Date.now() - started, lines: page.lines.length, isLedger: page.isLedger });
+    this.log('page', { trader: trader.id, ms: Date.now() - started, lines: page.lines.length, isLedger: page.isLedger, kind: page.photoKind });
     if (!page.isLedger) {
-      if (SHELF_WORDS.test(page.note)) return this.onShelf(trader, st, { ...msg, file: async () => bytes }, send);
+      // Shops rarely label goods, so any photo of goods is counted; no caption needed.
+      if (page.photoKind === 'goods' || SHELF_WORDS.test(page.note)) return this.onShelf(trader, st, { ...msg, file: async () => bytes }, send);
       return send({ text: t(lang, 'notLedger') });
     }
     if (!page.lines.length) return send({ text: t(lang, 'nothingFound') });
@@ -613,21 +614,16 @@ export class App {
     this.save(trader.id, { ...st, awaiting: null });
     await send({ text: t(lang, 'counting') });
     const { evidence } = await this.storeEvidence(trader, 'shelf', bytes, mime);
-    const listed = await this.o.meta.structured<{ items: { name: string; concept: string }[] }>({
+    const listed = await this.o.meta.structured<{ items: ShelfItem[] }>({
       name: 'shelf_items',
       effort: 'low',
       schema: SHELF_SCHEMA,
-      system: 'List the distinct kinds of goods for sale visible on this shop shelf (max 6, the most plentiful first). "name" is what a trader calls it (e.g. "Rice 50kg"). "concept" is a short visual noun phrase for an object detector that matches ONE unit of it (e.g. "bag of rice", "tin of tomato paste", "carton of noodles").',
-      parts: [imagePart(bytes, mime), textPart('What goods are on this shelf?')],
+      system: 'List the distinct kinds of goods for sale in this photo of a Nigerian shop or market stall (max 6, the most plentiful first). Goods may be on shelves, hanging from a wall, nail or rope in strips of sachets, on a table or tray, in crates, bowls or bags, or stacked on the floor. Most have no label or price tag: name each kind from what you can see (brand if readable, e.g. "Gino tomato paste sachet"; otherwise generic, e.g. "seasoning sachet"). "name" is what a trader calls it (e.g. "Rice 50kg"). "concept" is a short visual noun phrase for an object detector that matches ONE unit of it (e.g. "bag of rice", "tin of tomato paste", "carton of noodles"); for strips of sachets, ONE sachet, never the whole strip. "unit" is the plain container word for one unit.',
+      parts: [imagePart(bytes, mime), textPart('What goods are for sale here?')],
     });
     const items = listed.items.slice(0, 6);
     if (!items.length) return send({ text: t(lang, 'stockNone') });
-    const palette = ['0x16a34a', '0x2563eb', '0xf97316', '0xdb2777', '0x9333ea', '0x0891b2'];
-    const counted = await Promise.all(items.map(async (it, i) => {
-      const r = await this.o.meta.segment({ bytes, mime }, it.concept).catch(() => null);
-      const boxes = (r?.boxes ?? []).filter((b) => (b.confidence ?? 1) >= 0.5);
-      return { ...it, count: boxes.length, boxes, size: r ? { width: r.width, height: r.height } : null, color: palette[i] };
-    }));
+    const counted = (await this.countByUnit(bytes, mime, items)) ?? (await this.countByConcept(bytes, mime, items));
     const found = counted.filter((c) => c.count > 0);
     if (!found.length) return send({ text: t(lang, 'stockNone') });
     const lines = found.map((c) => {
@@ -643,6 +639,50 @@ export class App {
     if (img) await send({ photo: img, caption: text });
     else await send({ text });
     return send({ text: '🎨 /flyer → WhatsApp status flyer' });
+  }
+
+  /**
+   * SAM finds every unit with a plain word ("packet", "bottle"); it is poor at telling brands
+   * apart from a description. So Muse Spark then names each numbered box, and code counts.
+   * Returns null when SAM finds no units, so the caller can fall back to one search per item.
+   */
+  private async countByUnit(bytes: Uint8Array, mime: string, items: ShelfItem[]): Promise<Counted[] | null> {
+    const units = [...new Set(items.map((it) => it.unit))];
+    const found = await Promise.all(units.map((u) => this.o.meta.segment({ bytes, mime }, u).catch(() => null)));
+    const size = found.find((r) => r?.width);
+    if (!size) return null;
+    const boxes = dedupeBoxes(found.flatMap((r) => r?.boxes ?? []).filter((b) => (b.confidence ?? 1) >= 0.5))
+      .slice(0, MAX_UNITS)
+      .sort((p, q) => Math.round((p.y1 - q.y1) / (size.height / 12)) || p.x1 - q.x1); // reading order, so numbers are easy to follow
+    if (!boxes.length) return null;
+    const sheet = await contactSheet(bytes, boxes, size).catch(() => null);
+    if (!sheet) return null;
+    const named = await this.o.meta.structured<{ labels: { box: number; item: number }[] }>({
+      name: 'shelf_labels',
+      effort: 'low',
+      schema: LABEL_SCHEMA,
+      system: `The first image is a photo of goods in a shop. The second is a sheet of numbered tiles, each cut from that photo around one unit an object detector found. For every tile, say which of these goods it shows, by number, or 0 if it is none of them (part of a shelf, a price card, an empty space, something else, or two units in one tile):\n${items.map((it, k) => `${k + 1}. ${it.name}`).join('\n')}`,
+      parts: [imagePart(bytes, mime), imagePart(sheet, 'image/jpeg'), textPart(`Label all ${boxes.length} tiles.`)],
+    }).catch(() => null);
+    if (!named) return null;
+    // Code keeps the model honest: one label per real box, only goods from the list.
+    const kindOf = new Map<number, number>();
+    for (const l of named.labels) {
+      if (Number.isInteger(l.box) && l.box >= 1 && l.box <= boxes.length && Number.isInteger(l.item) && l.item >= 1 && l.item <= items.length && !kindOf.has(l.box)) kindOf.set(l.box, l.item - 1);
+    }
+    return items.map((it, i) => {
+      const mine = boxes.filter((_, b) => kindOf.get(b + 1) === i);
+      return { ...it, count: mine.length, boxes: mine, size: { width: size.width, height: size.height }, color: PALETTE[i] };
+    });
+  }
+
+  /** One SAM search per item, using the model's description of one unit. */
+  private async countByConcept(bytes: Uint8Array, mime: string, items: ShelfItem[]): Promise<Counted[]> {
+    return Promise.all(items.map(async (it, i) => {
+      const r = await this.o.meta.segment({ bytes, mime }, it.concept).catch(() => null);
+      const boxes = (r?.boxes ?? []).filter((b) => (b.confidence ?? 1) >= 0.5);
+      return { ...it, count: boxes.length, boxes, size: r ? { width: r.width, height: r.height } : null, color: PALETTE[i] };
+    }));
   }
 
   private async sendFlyer(trader: Trader, send: Send): Promise<void> {
@@ -689,12 +729,41 @@ const CORRECTION_SCHEMA = {
   },
 };
 
+const UNITS = ['packet', 'bottle', 'tin', 'bag', 'carton', 'box', 'jar', 'tray', 'crate', 'piece'] as const;
+interface ShelfItem { name: string; concept: string; unit: (typeof UNITS)[number] }
+interface Counted extends ShelfItem { count: number; boxes: SamBox[]; size: { width: number; height: number } | null; color: string }
+const PALETTE = ['0x16a34a', '0x2563eb', '0xf97316', '0xdb2777', '0x9333ea', '0x0891b2'];
+const MAX_UNITS = 120;
+
 const SHELF_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['items'],
   properties: {
-    items: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['name', 'concept'], properties: { name: { type: 'string' }, concept: { type: 'string' } } } },
+    items: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['name', 'concept', 'unit'], properties: { name: { type: 'string' }, concept: { type: 'string' }, unit: { type: 'string', enum: UNITS } } } },
   },
 };
+
+const LABEL_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['labels'],
+  properties: {
+    labels: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['box', 'item'], properties: { box: { type: 'integer' }, item: { type: 'integer' } } } },
+  },
+};
+
+/** Searches for several unit words can find the same object twice: keep the surer box. */
+export function dedupeBoxes(boxes: SamBox[], maxOverlap = 0.6): SamBox[] {
+  const area = (b: SamBox) => Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+  const iou = (a: SamBox, b: SamBox) => {
+    const w = Math.max(0, Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1));
+    const h = Math.max(0, Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1));
+    const inter = w * h;
+    return inter ? inter / (area(a) + area(b) - inter) : 0;
+  };
+  const kept: SamBox[] = [];
+  for (const b of [...boxes].sort((p, q) => (q.confidence ?? 1) - (p.confidence ?? 1))) {
+    if (kept.every((k) => iou(k, b) <= maxOverlap)) kept.push(b);
+  }
+  return kept;
+}
 
 function langButtons(): Button[][] {
   const b = (Object.keys(LANG_NAMES) as Lang[]).map((l) => ({ id: `lang:${l}`, title: LANG_NAMES[l] }));

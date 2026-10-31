@@ -53,6 +53,25 @@ export function annotatePixels(image: Uint8Array, boxes: { x1: number; y1: numbe
   return ffmpeg(['-i', 'pipe:0', '-vf', ['scale=w=min(iw\\,1280):h=-2', ...filters].join(','), '-frames:v', '1', '-q:v', '3', '-f', 'image2', '-c:v', 'mjpeg', 'pipe:1'], image);
 }
 
+/**
+ * Cut each box out of the photo into its own numbered tile, laid out on one sheet, so a vision
+ * model judges one unit at a time instead of reading small numbers on a crowded shelf.
+ */
+export function contactSheet(image: Uint8Array, boxes: { x1: number; y1: number; x2: number; y2: number }[], size: { width: number; height: number }, cols = 8): Promise<Uint8Array> {
+  const W = 150, H = 200, TOP = 26;
+  const tiles = boxes.map((b, i) => {
+    const f = (v: number, d: number) => Math.min(1, Math.max(0, v / d)).toFixed(4);
+    return `[s${i}]crop=w=iw*${f(b.x2 - b.x1, size.width)}:h=ih*${f(b.y2 - b.y1, size.height)}:x=iw*${f(b.x1, size.width)}:y=ih*${f(b.y1, size.height)},`
+      + `scale=${W}:${H - TOP}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:${TOP}:color=white,`
+      + `drawtext=text='${i + 1}':x=6:y=3:fontsize=22:fontcolor=black[t${i}]`;
+  });
+  const layout = boxes.map((_, i) => `${(i % cols) * W}_${Math.floor(i / cols) * H}`).join('|');
+  const graph = boxes.length === 1
+    ? `[0:v]split=1[s0];${tiles[0]};[t0]null[out]`
+    : `[0:v]split=${boxes.length}${boxes.map((_, i) => `[s${i}]`).join('')};${tiles.join(';')};${boxes.map((_, i) => `[t${i}]`).join('')}xstack=inputs=${boxes.length}:layout=${layout}:fill=white[out]`;
+  return ffmpeg(['-i', 'pipe:0', '-filter_complex', graph, '-map', '[out]', '-frames:v', '1', '-q:v', '3', '-f', 'image2', '-c:v', 'mjpeg', 'pipe:1'], image);
+}
+
 export function sniffMime(bytes: Uint8Array): string {
   if (bytes[0] === 0x89 && bytes[1] === 0x50) return 'image/png';
   if (bytes[0] === 0xff && bytes[1] === 0xd8) return 'image/jpeg';

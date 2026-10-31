@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
-import { App, type Incoming, type Reply } from '../src/app.ts';
+import { App, dedupeBoxes, type Incoming, type Reply } from '../src/app.ts';
 import { Ledger } from '../src/ledger.ts';
 import type { Meta } from '../src/meta.ts';
 import { startWeb } from '../src/web.ts';
@@ -62,6 +63,36 @@ test('photo → digit repair from the written total → confirm → sealed ledge
   const trader = h.ledger.trader('test', '7');
   assert.equal(h.ledger.outstanding(trader.id, 'Mama Tunde'), 650000);
   assert.equal(h.ledger.verifyChain(trader.id).ok, true);
+});
+
+test('a photo of goods with no caption is counted as stock', async () => {
+  // Shops hang sachets on the wall with no labels or prices; nobody captions the photo "stock".
+  // SAM finds 14 packets; Muse Spark names each tile: 10 Asun, 3 Jollof, 1 not goods.
+  const base = fakeMeta();
+  const photo = execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'color=white:s=400x300', '-frames:v', '1', '-f', 'image2', '-c:v', 'mjpeg', 'pipe:1']);
+  const boxes = Array.from({ length: 14 }, (_, i) => ({ id: i, x1: (i % 7) * 50, y1: Math.floor(i / 7) * 100, x2: (i % 7) * 50 + 40, y2: Math.floor(i / 7) * 100 + 90, confidence: 0.9 }));
+  const meta = {
+    ...base,
+    async structured(o: { name: string }) {
+      if (o.name === 'ledger_page') return { photoKind: 'goods', isLedger: false, pageDate: null, lines: [], writtenTotal: null, writtenTotalText: null, note: 'Sachets hanging on a wall.' };
+      if (o.name === 'shelf_items') return { items: [{ name: 'Gino Asun sachet', concept: 'sachet', unit: 'packet' }, { name: 'Party Jollof sachet', concept: 'green sachet', unit: 'packet' }] };
+      if (o.name === 'shelf_labels') return { labels: [...boxes.map((_, i) => ({ box: i + 1, item: i < 10 ? 1 : i < 13 ? 2 : 0 })), { box: 99, item: 1 }, { box: 1, item: 2 }] };
+      return base.structured(o as never);
+    },
+    async segment() { return { width: 400, height: 300, boxes }; },
+  } as unknown as Meta;
+  const h = harness(meta);
+  await h.say({ text: 'hi' });
+  await h.say({ type: 'photo', file: async () => new Uint8Array(photo) });
+  // Box 99 doesn't exist and box 1 is labelled twice: code keeps only the first label per real box.
+  assert.match(h.text(), /Gino Asun sachet: \*\*10\*\*/);
+  assert.match(h.text(), /Party Jollof sachet: \*\*3\*\*/);
+  assert.doesNotMatch(h.text(), /couldn't find business records/);
+});
+
+test('overlapping boxes from two searches count once', () => {
+  const b = (x1: number, confidence: number) => ({ id: 0, x1, y1: 0, x2: x1 + 100, y2: 100, confidence });
+  assert.deepEqual(dedupeBoxes([b(0, 0.6), b(10, 0.9), b(300, 0.7)]).map((x) => x.x1), [10, 300]);
 });
 
 test('the same photo twice is skipped', async () => {
