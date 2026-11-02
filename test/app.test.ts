@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -48,7 +48,7 @@ function harness(meta: Meta = fakeMeta()) {
   const say = async (m: Partial<Incoming>) => { out.length = 0; await app.handle({ channel: 'test', user: '7', type: 'text', ...m } as Incoming, async (r) => { out.push(r); }); return out; };
   const button = (prefix: string) => out.flatMap((r) => r.buttons?.flat() ?? []).find((b) => b.id.startsWith(prefix))!.id;
   const text = () => out.map((r) => r.text ?? r.caption ?? '').join('\n');
-  return { app, ledger, say, button, text };
+  return { app, ledger, say, button, text, dir };
 }
 
 test('photo → digit repair from the written total → confirm → sealed ledger', async () => {
@@ -102,6 +102,23 @@ test('a photo of goods with no caption is counted as stock', async () => {
 test('overlapping boxes from two searches count once', () => {
   const b = (x1: number, confidence: number) => ({ id: 0, x1, y1: 0, x2: x1 + 100, y2: 100, confidence });
   assert.deepEqual(dedupeBoxes([b(0, 0.6), b(10, 0.9), b(300, 0.7)]).map((x) => x.x1), [10, 300]);
+});
+
+test('a photo that is neither a book page nor goods is not kept', async () => {
+  const base = fakeMeta();
+  const meta = {
+    ...base,
+    async structured(o: { name: string }) {
+      if (o.name === 'ledger_page') return { photoKind: 'other', isLedger: false, pageDate: null, lines: [], writtenTotal: null, writtenTotalText: null, note: 'A portrait of a person.' };
+      return base.structured(o as never);
+    },
+  } as unknown as Meta;
+  const h = harness(meta);
+  await h.say({ text: 'hi' });
+  await h.say({ type: 'photo', file: async () => new Uint8Array([0xff, 0xd8, 7, 7]) });
+  assert.match(h.text(), /couldn't find business records or goods/);
+  assert.equal((h.ledger.db.prepare('SELECT COUNT(*) AS n FROM evidence').get() as { n: number }).n, 0);
+  assert.equal(readdirSync(join(h.dir, 'evidence')).length, 0);
 });
 
 test('the same photo twice is skipped', async () => {

@@ -355,6 +355,18 @@ export class Ledger {
   }
 
   /** Erase everything about a trader (their right to be forgotten). Returns evidence file paths to delete. */
+  /**
+   * Remove evidence that turned out not to be business records (a selfie, a random photo).
+   * Refuses if any entry or stock count uses it. Returns the file path to delete, if any.
+   */
+  dropEvidence(id: string): string | null {
+    const used = this.db.prepare('SELECT 1 FROM entries WHERE evidence_id = ? UNION SELECT 1 FROM stock_counts WHERE evidence_id = ? LIMIT 1').get(id, id);
+    if (used) return null;
+    const r = this.db.prepare('SELECT path FROM evidence WHERE id = ?').get(id) as any;
+    this.db.prepare('DELETE FROM evidence WHERE id = ?').run(id);
+    return r?.path ?? null;
+  }
+
   forget(traderId: number): string[] {
     const paths = (this.db.prepare('SELECT path FROM evidence WHERE trader_id = ? AND path IS NOT NULL').all(traderId) as any[]).map((r) => r.path as string);
     for (const t of ['postings', 'entries', 'evidence', 'stock_counts', 'state', 'passports']) {

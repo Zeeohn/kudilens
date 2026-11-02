@@ -265,6 +265,9 @@ export class App {
     if (!page.isLedger) {
       // Shops rarely label goods, so any photo of goods is counted; no caption needed.
       if (page.photoKind === 'goods' || SHELF_WORDS.test(page.note)) return this.onShelf(trader, st, { ...msg, file: async () => bytes }, send);
+      // Not business records: don't keep the photo (privacy promise: photos are only for the books).
+      const path = this.o.ledger.dropEvidence(evidence.id);
+      if (path) rmSync(path, { force: true });
       return send({ text: t(lang, 'notLedger') });
     }
     if (!page.lines.length) return send({ text: t(lang, 'nothingFound') });
