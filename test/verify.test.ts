@@ -86,3 +86,26 @@ test('quantity × price breaks a tie between two possible repairs', () => {
   assert.equal(r.status, 'repaired');
   assert.deepEqual([r.repairs[0].target, r.repairs[0].to], [0, 500000]);
 });
+
+test('a page with no sales is totalled over all its lines, never against ₦0', () => {
+  // Field test: a restock list of 9 lines (₦63,500) with "Total = 50,000" written under it.
+  const page = [entry({ kind: 'stock_in', amount: 2400000 }), entry({ kind: 'stock_in', amount: 3950000 })];
+  const r = reconcileTotal(page, 5000000);
+  assert.equal(r.status, 'mismatch');
+  assert.equal(r.computed, 6350000);
+  assert.equal(r.basis, 'all_lines');
+  assert.equal(reconcileTotal(page, 6350000).status, 'match');
+});
+
+test('a clearly written amount is not "repaired" by a tenfold change to fit a wrong total', () => {
+  // Field test: 9 sales add up to 63,500 but the trader wrote 50,000. Reading 15,000 as 1,500 would
+  // "fit", but 15,000 was clear (confidence and its comma), so the total is reported as wrong.
+  const amounts = [1000, 24000, 4000, 6500, 15000, 1400, 1350, 250, 10000];
+  const page = amounts.map((a) => entry({ amount: a * 100, rawText: `x - ${a.toLocaleString('en-US')}`, confidence: 0.97 }));
+  const r = reconcileTotal(page, 5000000);
+  assert.equal(r.status, 'mismatch');
+  assert.equal(r.computed, 6350000);
+  // A hard-to-read line without commas can still be repaired tenfold.
+  const unclear = [entry({ amount: 150000, rawText: 'rice 1500', confidence: 0.6 }), entry({ amount: 100000 })];
+  assert.equal(reconcileTotal(unclear, 1600000).status, 'repaired');
+});

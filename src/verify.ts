@@ -104,7 +104,7 @@ export interface Repair {
 
 export interface TotalCheck {
   status: 'no_total' | 'match' | 'repaired' | 'ambiguous' | 'mismatch';
-  basis: 'sales' | 'cash_received' | null;
+  basis: 'sales' | 'cash_received' | 'all_lines' | null;
   written: Kobo | null;
   computed: Kobo;
   repairs: Repair[];
@@ -135,18 +135,26 @@ export function misreadings(amount: Kobo): { value: Kobo; reason: string }[] {
  * that makes the page add up. One candidate = a proposed repair; several = ask.
  */
 export function reconcileTotal(entries: ProposedEntry[], written: Kobo | null): TotalCheck {
-  const sales = entries.map((e, i) => ({ e, i })).filter(({ e }) => e.kind === 'sale');
+  // A page's total is normally its sales. A page with no sales on it (a restock list, the day's
+  // expenses) totals all its lines instead, so the check never compares the total with ₦0.
+  const all = entries.map((e, i) => ({ e, i }));
+  const onlySales = all.filter(({ e }) => e.kind === 'sale');
+  const basis = onlySales.length ? 'sales' : 'all_lines';
+  const sales = onlySales.length ? onlySales : all;
   const salesSum = sales.reduce((s, { e }) => s + e.amount, 0);
-  const cashSum = sales.reduce((s, { e }) => s + cashPortion(e), 0);
+  const cashSum = onlySales.reduce((s, { e }) => s + cashPortion(e), 0);
   if (written === null || written <= 0) {
     return { status: 'no_total', basis: null, written, computed: salesSum, repairs: [] };
   }
-  if (salesSum === written) return { status: 'match', basis: 'sales', written, computed: salesSum, repairs: [] };
-  if (cashSum === written) return { status: 'match', basis: 'cash_received', written, computed: cashSum, repairs: [] };
+  if (salesSum === written) return { status: 'match', basis, written, computed: salesSum, repairs: [] };
+  if (onlySales.length && cashSum === written) return { status: 'match', basis: 'cash_received', written, computed: cashSum, repairs: [] };
 
   const candidates: Repair[] = [];
   for (const { e, i } of sales) {
     for (const m of misreadings(e.amount)) {
+      // A zero too many or too few changes an amount tenfold; only suggest it when the line was
+      // hard to read. "15,000" read with confidence is 15,000: the total is more likely wrong.
+      if (m.reason.includes('zero') && clearlyWritten(e)) continue;
       if (salesSum - e.amount + m.value === written) {
         candidates.push({ target: i, from: e.amount, to: m.value, reason: m.reason });
       }
@@ -168,7 +176,14 @@ export function reconcileTotal(entries: ProposedEntry[], written: Kobo | null): 
     if (agree.length === 1) chosen = agree;
   }
   const status = chosen.length === 1 ? 'repaired' : chosen.length > 1 ? 'ambiguous' : 'mismatch';
-  return { status, basis: 'sales', written, computed: salesSum, repairs: chosen };
+  return { status, basis, written, computed: salesSum, repairs: chosen };
+}
+
+/** The amount was read with confidence, or its thousands commas fix how many digits it has. */
+function clearlyWritten(e: ProposedEntry): boolean {
+  if ((e.confidence ?? 0) >= 0.9) return true;
+  const grouped = (e.rawText ?? '').match(/\d{1,3}(?:,\d{3})+/g) ?? [];
+  return grouped.some((g) => Number(g.replaceAll(',', '')) * 100 === e.amount);
 }
 
 function cashPortion(e: ProposedEntry): Kobo {

@@ -69,6 +69,7 @@ Conventions traders use:
 - "owe", "credit", "on credit", "go pay", "bal" (balance) = sold on credit. "paid 4,000 bal 5,000" on a 9,000 sale = partial, amountPaid 4000.
 - A customer paying back all or PART of what they owe ("X paid 3,000", "Tunde don pay 50k", "she pay half", "she balance me", "e remain 20k") = kind "payment", amount = what was paid NOW. If they only say what is left ("remain 20k"), amount = what the customer owed (see below) minus what is left; "half" = half of what they owe. customer = the debtor's name as written in the books.
 - Goods the trader bought to resell ("supply", "bought", "restock") = "stock_in"; "I owe" on a supply means paid "owed" and customer = the supplier.
+- A page listing goods with amounts is the day's SALES ("sale") unless the page itself says the goods were bought (supply, bought, restock, purchase, "from" a supplier). A shop name at the top or a Total line at the bottom does not make it a purchase list.
 - Running costs (transport, light/NEPA, rent, levy, food, airtime) = "expense".
 - "transfer" / "trf" = transfer, "POS" = pos; otherwise "cash" for paid lines, "unknown" if nothing suggests it.
 - A total, sub-total or "balance b/f" line is NOT a transaction: put the total in writtenTotal, never in lines.
