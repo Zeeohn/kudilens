@@ -35,7 +35,9 @@ const whatsapp = env.WA_TOKEN && env.WA_PHONE_ID && env.WA_VERIFY_TOKEN && env.W
 const port = Number(env.PORT ?? 8080);
 startWeb({
   ledger, whatsapp, today: () => app.today(), samplesDir: join(import.meta.dirname, '..', 'eval', 'samples'),
-  botUsername: env.TG_USERNAME, waNumber: env.WA_DISPLAY_NUMBER, log,
+  botUsername: env.TG_USERNAME,
+  // The WhatsApp test number only answers numbers invited in the Meta dashboard: advertise it only once it's public.
+  waNumber: env.WA_PUBLIC === '1' ? env.WA_DISPLAY_NUMBER : undefined, log,
 }, port);
 log('web', { port, whatsapp: !!whatsapp, open: open?.model ?? null });
 

@@ -5,7 +5,6 @@
 export const MODELS = {
   reason: 'muse-spark-1.3', // vision, extraction, the agent
   audio: 'muse-spark-1.3', // listens to voice notes; beat 1.2 on our Pidgin tests (see eval/)
-  wonder: 'muse-wonder-1.0', // long-horizon work (month-end close)
   sam: 'sam-3.1',
   image: 'muse-image-1.0',
   transcribe: 'muse-voice-transcribe-1.0',

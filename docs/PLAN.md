@@ -1,3 +1,5 @@
+> **Status, 3 Nov:** this is the plan written on 28 Oct, kept for the record. What shipped differs; the README is the accurate description. Shipped: **four** Meta models (Muse Spark 1.3 for vision, audio and the agent; Muse Voice Transcribe; SAM 3.1; Muse Image). Not built: the open-weight route (Spark Open / Glimmer) and Muse Wonder. Field-test results: `eval/FIELD-TEST.md`.
+
 # KudiLens — hackathon game plan (Indie track, target: top 3)
 
 **Deadline:** Wed 4 Nov, 9:00 PM ET = **Thu 5 Nov, 03:00 Lagos time** (US clocks change on 1 Nov).

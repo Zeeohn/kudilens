@@ -46,12 +46,13 @@ if (what === 'pages' || what === 'all') {
     const s = score(r.lines, j.lines);
     const rec = reconcileTotal(r.lines, r.writtenTotal);
     for (const k of ['truth', 'pred', 'matched', 'paidOk', 'customerOk'] as const) tot[k] += s[k];
-    if (j.total) { tot.totals++; if (r.writtenTotal === fromNaira(j.total)) tot.totalsOk++; if (rec.status === 'match' || rec.status === 'repaired') tot.reconciled++; }
+    // totalIsWrong: the trader's own sum is wrong, so the right answer is a warning, not a match.
+    if (j.total) { tot.totals++; if (r.writtenTotal === fromNaira(j.total)) tot.totalsOk++; if (j.totalIsWrong ? rec.status === 'mismatch' : rec.status === 'match' || rec.status === 'repaired') tot.reconciled++; }
     tot.ms += ms; tot.n++;
     rows.push(`| ${j.image} | ${s.matched}/${s.truth} | ${s.pred} | ${rec.status} | ${ms} ms |`);
     console.log(j.image, s, rec.status, ms);
   }
-  report.push('## Ledger pages (Muse Spark 1.3 vision)', '', `Pages: ${tot.n}. Lines found with the exact kind and amount: **${pct(tot.matched, tot.truth)}** (${tot.matched}/${tot.truth}); extra lines: ${tot.pred - tot.matched}. Paid status correct: ${pct(tot.paidOk, tot.matched)}. Customer correct: ${pct(tot.customerOk, tot.matched)}. Written total read correctly: ${pct(tot.totalsOk, tot.totals)}. Pages that reconcile (match or one repair): ${pct(tot.reconciled, tot.totals)}. Average time: ${tot.n ? Math.round(tot.ms / tot.n) : 0} ms.`, '',
+  report.push('## Ledger pages (Muse Spark 1.3 vision)', '', `Pages: ${tot.n}. Lines found with the exact kind and amount: **${pct(tot.matched, tot.truth)}** (${tot.matched}/${tot.truth}); extra lines: ${tot.pred - tot.matched}. Paid status correct: ${pct(tot.paidOk, tot.matched)}. Customer correct: ${pct(tot.customerOk, tot.matched)}. Written total read correctly: ${pct(tot.totalsOk, tot.totals)}. Total check right (match or one repair; a warning where the trader's own total is wrong): ${pct(tot.reconciled, tot.totals)}. Average time: ${tot.n ? Math.round(tot.ms / tot.n) : 0} ms.`, '',
     '| Page | Lines matched | Lines predicted | Total check | Time |', '|---|---|---|---|---|', ...rows, '');
 }
 
@@ -73,7 +74,7 @@ if (what === 'voice' || what === 'all') {
       console.log(j.audio, name, s);
     }
   }
-  report.push('## Voice notes: lines found with the exact kind and amount, by route', '', `| Language | ${Object.keys(routes).join(' | ')} |`, `|---|${Object.keys(routes).map(() => '---').join('|')}|`,
+  if (byLang.size) report.push('## Voice notes: lines found with the exact kind and amount, by route', '', `| Language | ${Object.keys(routes).join(' | ')} |`, `|---|${Object.keys(routes).map(() => '---').join('|')}|`,
     ...[...byLang].map(([lang, r]) => `| ${lang} | ${Object.keys(routes).map((k) => r[k] ? `${pct(r[k].m, r[k].t)} (${r[k].m}/${r[k].t})` : '–').join(' | ')} |`), '');
 }
 
@@ -81,7 +82,7 @@ if (what === 'repair' || what === 'all') {
   // Simulate every single-digit misreading on every page with a total, and check the repair.
   let cases = 0, fixed = 0, asked = 0, wrong = 0;
   for (const { j } of files(/./)) {
-    if (!j.total || !j.lines) continue;
+    if (!j.total || !j.lines || j.totalIsWrong) continue;
     const truth: ProposedEntry[] = j.lines.map((l: Truth) => ({ kind: l.kind, date: null, item: null, unit: null, quantity: (l as any).quantity ?? null, unitPrice: (l as any).unitPrice ? fromNaira((l as any).unitPrice) : null, amount: fromNaira(l.amount), paid: l.paid, amountPaid: null, method: 'cash', customer: l.customer, dueDate: null, rawText: '', region: null, confidence: 1 }));
     truth.forEach((line, i) => {
       if (line.kind !== 'sale') return;
